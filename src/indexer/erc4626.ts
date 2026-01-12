@@ -17,38 +17,74 @@ export interface VaultApyData {
 
 /**
  * Get current vault data for an ERC-4626 vault
+ * 
+ * Handles different token decimals (USDC = 6, DAI = 18, etc.)
  */
 export async function getVaultData(vaultAddress: Address): Promise<VaultData> {
   const client = getArbitrumClient();
 
-  // Use 1e18 shares as standard for price calculation
-  const ONE_SHARE = 10n ** 18n;
-
-  const [pricePerShare, totalAssets, decimals] = await Promise.all([
-    client.readContract({
-      address: vaultAddress,
-      abi: erc4626Abi,
-      functionName: "convertToAssets",
-      args: [ONE_SHARE],
-    }),
-    client.readContract({
-      address: vaultAddress,
-      abi: erc4626Abi,
-      functionName: "totalAssets",
-    }),
-    client.readContract({
+  try {
+    // First get decimals to know the correct share unit
+    const decimals = await client.readContract({
       address: vaultAddress,
       abi: erc4626Abi,
       functionName: "decimals",
-    }),
-  ]);
+    });
 
-  return {
-    pricePerShare,
-    pricePerShareDecimal: Number(formatUnits(pricePerShare, decimals)),
-    totalAssets: Number(formatUnits(totalAssets, decimals)),
-    decimals,
-  };
+    // Use 10^decimals as ONE_SHARE (not hardcoded 1e18)
+    // USDC vaults use 6 decimals, DAI uses 18, etc.
+    const ONE_SHARE = 10n ** BigInt(decimals);
+
+    const [pricePerShare, totalAssets] = await Promise.all([
+      client.readContract({
+        address: vaultAddress,
+        abi: erc4626Abi,
+        functionName: "convertToAssets",
+        args: [ONE_SHARE],
+      }),
+      client.readContract({
+        address: vaultAddress,
+        abi: erc4626Abi,
+        functionName: "totalAssets",
+      }),
+    ]);
+
+    return {
+      pricePerShare,
+      pricePerShareDecimal: Number(formatUnits(pricePerShare, decimals)),
+      totalAssets: Number(formatUnits(totalAssets, decimals)),
+      decimals,
+    };
+  } catch (error) {
+    // Some vaults may be empty, paused, or not fully ERC-4626 compliant
+    // Try fallback approach: just get totalAssets
+    try {
+      const [totalAssets, decimals] = await Promise.all([
+        client.readContract({
+          address: vaultAddress,
+          abi: erc4626Abi,
+          functionName: "totalAssets",
+        }),
+        client.readContract({
+          address: vaultAddress,
+          abi: erc4626Abi,
+          functionName: "decimals",
+        }),
+      ]);
+
+      const ONE_SHARE = 10n ** BigInt(decimals);
+      
+      return {
+        pricePerShare: ONE_SHARE, // Default to 1:1 if convertToAssets fails
+        pricePerShareDecimal: 1,
+        totalAssets: Number(formatUnits(totalAssets, decimals)),
+        decimals,
+      };
+    } catch {
+      // Complete failure - return zeros
+      throw new Error(`Vault ${vaultAddress} is not ERC-4626 compliant or is empty/paused`);
+    }
+  }
 }
 
 /**
@@ -65,7 +101,15 @@ export async function calculateVaultApy(
   previousPPS: bigint | null,
   previousTimestamp: Date | null
 ): Promise<VaultApyData> {
-  const currentData = await getVaultData(vaultAddress);
+  let currentData: VaultData;
+  
+  try {
+    currentData = await getVaultData(vaultAddress);
+  } catch (error) {
+    // Vault is not accessible - return zeros
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`Failed to get vault data: ${errorMsg}`);
+  }
 
   // If no previous data, we can't calculate APY yet
   // Return 0 APY and store current PPS for next calculation
@@ -112,9 +156,10 @@ export async function calculateVaultApy(
   const apyDecimal = hourlyReturn * (hoursPerYear / hoursPassed);
   const apyPercent = apyDecimal * 100;
 
-  // Sanity check: APY should be reasonable (0% to 1000%)
-  // If outside this range, something is wrong
-  const clampedApy = Math.max(0, Math.min(1000, apyPercent));
+  // Sanity check: APY should be reasonable (-100% to 1000%)
+  // Negative APY is possible for vaults losing value
+  // If outside this range, something is wrong with data
+  const clampedApy = Math.max(-100, Math.min(1000, apyPercent));
 
   return {
     apy: clampedApy,

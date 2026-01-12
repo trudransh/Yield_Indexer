@@ -3,24 +3,25 @@ import { DiscoveredVault } from "./vaultsfyi.js";
 
 /**
  * Determine the ABI type for a protocol
+ * 
+ * Important: Most vaults from vaults.fyi are ERC-4626 vaults, even if they're
+ * from Aave or Compound. The vault addresses from vaults.fyi are the vault
+ * contract addresses, NOT the core lending pool addresses.
+ * 
+ * Only use aave_v3/compound_v3 ABI for pools we manually added with known
+ * pool addresses (not from vaults.fyi discovery).
  */
 function getPoolAbiType(protocolName: string, poolType: "lending" | "vault"): string {
-  const abiTypeMap: Record<string, string> = {
-    aave_v3: "aave_v3",
-    aave: "aave_v3",
-    compound_v3: "compound_v3",
-    compound: "compound_v3",
-    radiant_v2: "aave_v3", // Radiant is an Aave fork
-    radiant: "aave_v3",
-  };
-
-  // Check if we have a specific ABI type for this protocol
-  if (abiTypeMap[protocolName]) {
-    return abiTypeMap[protocolName];
-  }
-
-  // Default based on pool type
-  return poolType === "lending" ? "aave_v3" : "erc4626";
+  // These are the only ABIs we can use from our manual config
+  // Vaults discovered from vaults.fyi are always ERC-4626
+  // because vaults.fyi only tracks ERC-4626 compliant vaults
+  
+  // Note: Even "Aave v3" vaults from vaults.fyi are ERC-4626 wrappers,
+  // not the core Aave pool. The core pool is at a different address.
+  
+  // For now, default everything from vaults.fyi to erc4626
+  // The actual Aave/Compound pools are added manually in seed.ts
+  return "erc4626";
 }
 
 /**

@@ -1,7 +1,18 @@
 import { type Address } from "viem";
 import prisma from "../db/client.js";
 import { getLendingPoolApy } from "./lending.js";
-import { calculateVaultApy, getVaultData } from "./erc4626.js";
+import { calculateVaultApy } from "./erc4626.js";
+import { config } from "../config.js";
+
+// Known lending pool addresses from our config
+// Only these should use Aave/Compound ABIs
+const KNOWN_AAVE_POOLS = new Set([
+  config.protocols.aave_v3.poolAddress.toLowerCase(),
+]);
+
+const KNOWN_COMPOUND_POOLS = new Set([
+  config.protocols.compound_v3.cometAddress.toLowerCase(),
+]);
 
 export interface IndexResult {
   poolId: number;
@@ -39,11 +50,28 @@ export async function indexPool(poolId: number): Promise<IndexResult> {
 
     const contractAddress = pool.contractAddress as Address;
     const underlyingToken = pool.underlyingToken as Address;
+    const contractLower = contractAddress.toLowerCase();
 
-    if (pool.poolType === "lending") {
-      // Lending pool: read APY directly from contract
+    // Check if this is a KNOWN lending pool address from our config
+    // Only these should use native Aave/Compound ABIs
+    // Everything else (including vaults.fyi discovered vaults) uses ERC-4626
+    const isKnownAavePool = KNOWN_AAVE_POOLS.has(contractLower);
+    const isKnownCompoundPool = KNOWN_COMPOUND_POOLS.has(contractLower);
+
+    if (isKnownAavePool) {
+      // Aave V3 pool - use Aave ABI
       const data = await getLendingPoolApy(
-        pool.protocol.poolAbiType,
+        "aave_v3",
+        contractAddress,
+        underlyingToken
+      );
+      apy = data.apy;
+      tvl = data.tvl;
+      rawRate = data.rawRate;
+    } else if (isKnownCompoundPool) {
+      // Compound V3 pool - use Compound ABI
+      const data = await getLendingPoolApy(
+        "compound_v3",
         contractAddress,
         underlyingToken
       );
@@ -61,15 +89,16 @@ export async function indexPool(poolId: number): Promise<IndexResult> {
       tvl = data.tvl;
       rawRate = data.rawRate;
 
-      // Update last PPS for next calculation
-      const vaultData = await getVaultData(contractAddress);
-      await prisma.pool.update({
-        where: { id: poolId },
-        data: {
-          lastPricePerShare: vaultData.pricePerShare.toString(),
-          lastPpsTimestamp: new Date(),
-        },
-      });
+      // Update last PPS for next calculation (only if we got valid data)
+      if (rawRate > 0n) {
+        await prisma.pool.update({
+          where: { id: poolId },
+          data: {
+            lastPricePerShare: rawRate.toString(),
+            lastPpsTimestamp: new Date(),
+          },
+        });
+      }
     }
 
     // Store snapshot
