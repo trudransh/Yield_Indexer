@@ -10,6 +10,29 @@ import {
   RateUpdate,
   VaultEvent,
 } from "./model";
+import * as fs from "fs";
+import * as path from "path";
+
+// Load vault addresses from JSON file (exported by poller discovery job)
+function loadVaultAddresses(): string[] {
+  const vaultAddressesPath = path.join(process.cwd(), "..", "vault-addresses.json");
+  
+  try {
+    if (fs.existsSync(vaultAddressesPath)) {
+      const data = fs.readFileSync(vaultAddressesPath, "utf-8");
+      const addresses = JSON.parse(data) as string[];
+      console.log(`📦 Loaded ${addresses.length} vault addresses from vault-addresses.json`);
+      return addresses.map((a) => a.toLowerCase());
+    }
+  } catch (error) {
+    console.warn("⚠️ Could not load vault-addresses.json, will discover vaults from events");
+  }
+  
+  return [];
+}
+
+// Track known vault addresses (loaded from file + discovered from events)
+const knownVaults = new Set<string>(loadVaultAddresses());
 
 // Initialize processor
 const processor = new EvmBatchProcessor()
@@ -30,7 +53,11 @@ const processor = new EvmBatchProcessor()
     topic0: [aaveV3.events.ReserveDataUpdated.topic],
   })
   .addLog({
-    // ERC-4626 Vault Deposit/Withdraw events (will filter by known vaults)
+    // ERC-4626 Vault Deposit/Withdraw events
+    // If we have known vaults, filter by them; otherwise, listen to all
+    ...(knownVaults.size > 0
+      ? { address: Array.from(knownVaults) }
+      : {}),
     topic0: [erc4626.events.Deposit.topic, erc4626.events.Withdraw.topic],
   })
   .setFields({
@@ -49,9 +76,6 @@ const processor = new EvmBatchProcessor()
 
 // Database
 const db = new TypeormDatabase();
-
-// Track known vault addresses (populated from events or config)
-const knownVaults = new Set<string>();
 
 export async function runArbitrumProcessor(): Promise<void> {
   console.log("🚀 Starting Arbitrum Yield Processor...");

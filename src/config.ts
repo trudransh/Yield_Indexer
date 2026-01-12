@@ -8,6 +8,24 @@ export const config = {
   arbitrumRpcUrl: process.env.ARBITRUM_RPC_URL || "https://arb1.arbitrum.io/rpc",
   arbitrumChainId: 42161,
 
+  // vaults.fyi API
+  vaultsFyiApiKey: process.env.VAULTS_FYI_API_KEY!,
+  vaultsFyiBaseUrl: "https://api.vaults.fyi/v2",
+
+  // Credit-saving filters (applied server-side)
+  vaultsFyiFilters: {
+    minTvl: parseInt(process.env.MIN_TVL_USD || "50000"), // $50k minimum to save credits
+    // Stablecoin tokens to filter by (server-side filter)
+    tokens: [
+      "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // USDC (native)
+      "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", // USDC.e (bridged)
+      "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", // USDT
+      "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", // DAI
+    ],
+    // Historical data granularity: "1hour", "1day", "1week" (use "1week" to save credits)
+    historyGranularity: process.env.HISTORY_GRANULARITY || "1week",
+  },
+
   // Indexer intervals
   indexIntervalHours: parseInt(process.env.INDEX_INTERVAL_HOURS || "1"),
   discoveryIntervalHours: parseInt(process.env.DISCOVERY_INTERVAL_HOURS || "24"),

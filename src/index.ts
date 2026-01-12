@@ -3,23 +3,41 @@
  *
  * Runs scheduled jobs:
  * - Hourly: Index all pools (fetch on-chain APY)
- * - Daily: Discover new pools from DefiLlama
+ * - Daily: Discover new vaults from vaults.fyi API
  * - Daily: Update stability metrics
  */
 
 import cron from "node-cron";
-import prisma from "./db/client.js";
+import path from "path";
+import { prisma } from "./db/client.js";
 import { config } from "./config.js";
-import { syncPoolsToDb } from "./discovery/sync-pools.js";
+import { fetchArbitrumVaults } from "./discovery/vaultsfyi.js";
+import { syncVaultsToDB, deactivateMissingVaults, exportVaultAddressesToFile } from "./discovery/vaultsfyi-sync.js";
 import { indexAllPools } from "./indexer/index.js";
 import { updateAllPoolMetrics, getPoolsRankedByAdjustedApy } from "./metrics/stability.js";
 
 async function runDiscovery() {
   console.log("\n" + "=".repeat(60));
-  console.log("🔍 DISCOVERY JOB");
+  console.log("🔍 DISCOVERY JOB (vaults.fyi)");
   console.log("=".repeat(60));
   try {
-    await syncPoolsToDb();
+    // Fetch vaults from vaults.fyi API
+    const vaults = await fetchArbitrumVaults();
+
+    if (vaults.length === 0) {
+      console.log("⚠️ No vaults found from vaults.fyi API");
+      return;
+    }
+
+    // Sync to database
+    await syncVaultsToDB(vaults);
+
+    // Deactivate vaults that are no longer in the API
+    await deactivateMissingVaults(vaults);
+
+    // Export vault addresses for Subsquid processor
+    const exportPath = path.join(process.cwd(), "vault-addresses.json");
+    await exportVaultAddressesToFile(exportPath);
   } catch (error) {
     console.error("Discovery job error:", error);
   }
