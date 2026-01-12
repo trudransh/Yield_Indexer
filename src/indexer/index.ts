@@ -2,10 +2,11 @@ import { type Address } from "viem";
 import prisma from "../db/client.js";
 import { getLendingPoolApy } from "./lending.js";
 import { calculateVaultApy } from "./erc4626.js";
+import { detectProtocolType, getProtocolData } from "./protocols.js";
 import { config } from "../config.js";
 
 // Known lending pool addresses from our config
-// Only these should use Aave/Compound ABIs
+// Only these should use Aave/Compound ABIs directly
 const KNOWN_AAVE_POOLS = new Set([
   config.protocols.aave_v3.poolAddress.toLowerCase(),
 ]);
@@ -53,8 +54,6 @@ export async function indexPool(poolId: number): Promise<IndexResult> {
     const contractLower = contractAddress.toLowerCase();
 
     // Check if this is a KNOWN lending pool address from our config
-    // Only these should use native Aave/Compound ABIs
-    // Everything else (including vaults.fyi discovered vaults) uses ERC-4626
     const isKnownAavePool = KNOWN_AAVE_POOLS.has(contractLower);
     const isKnownCompoundPool = KNOWN_COMPOUND_POOLS.has(contractLower);
 
@@ -79,26 +78,67 @@ export async function indexPool(poolId: number): Promise<IndexResult> {
       tvl = data.tvl;
       rawRate = data.rawRate;
     } else {
-      // ERC-4626 vault: calculate APY from price per share change
-      const data = await calculateVaultApy(
-        contractAddress,
-        pool.lastPricePerShare ? BigInt(pool.lastPricePerShare.toString()) : null,
-        pool.lastPpsTimestamp
-      );
-      apy = data.apy;
-      tvl = data.tvl;
-      rawRate = data.rawRate;
-
-      // Update last PPS for next calculation (only if we got valid data)
-      if (rawRate > 0n) {
-        await prisma.pool.update({
-          where: { id: poolId },
-          data: {
-            lastPricePerShare: rawRate.toString(),
-            lastPpsTimestamp: new Date(),
-          },
-        });
+      // Detect protocol type from pool name
+      const protocolType = detectProtocolType(pool.name);
+      
+      // If it's a known protocol type, use protocol-specific handler
+      if (protocolType !== "unknown") {
+        const data = await getProtocolData(
+          protocolType,
+          contractAddress,
+          pool.lastPricePerShare ? BigInt(pool.lastPricePerShare.toString()) : null,
+          pool.lastPpsTimestamp
+        );
+        apy = data.apy;
+        tvl = data.tvl;
+        rawRate = data.rawRate;
+        
+        // Update last PPS for Beefy-style vaults that need PPS tracking
+        if (protocolType === "beefy" && rawRate > 0n) {
+          await prisma.pool.update({
+            where: { id: poolId },
+            data: {
+              lastPricePerShare: rawRate.toString(),
+              lastPpsTimestamp: new Date(),
+            },
+          });
+        }
+      } else {
+        // Unknown protocol - try ERC-4626 first, then generic fallback
+        try {
+          const data = await calculateVaultApy(
+            contractAddress,
+            pool.lastPricePerShare ? BigInt(pool.lastPricePerShare.toString()) : null,
+            pool.lastPpsTimestamp
+          );
+          apy = data.apy;
+          tvl = data.tvl;
+          rawRate = data.rawRate;
+          
+          // Update last PPS for ERC-4626 style vaults
+          if (rawRate > 0n) {
+            await prisma.pool.update({
+              where: { id: poolId },
+              data: {
+                lastPricePerShare: rawRate.toString(),
+                lastPpsTimestamp: new Date(),
+              },
+            });
+          }
+        } catch {
+          // ERC-4626 failed, use generic token handler (never throws)
+          const data = await getProtocolData("unknown", contractAddress);
+          apy = data.apy;
+          tvl = data.tvl;
+          rawRate = data.rawRate;
+        }
       }
+    }
+
+    // If APY is 0 but we have stored API data, use that
+    // This happens for protocols where we can't calculate APY on-chain
+    if (apy === 0 && pool.currentApy && Number(pool.currentApy) > 0) {
+      apy = Number(pool.currentApy);
     }
 
     // Store snapshot
@@ -109,7 +149,7 @@ export async function indexPool(poolId: number): Promise<IndexResult> {
         timestamp: now,
         apy,
         tvl,
-        rawRate: rawRate.toString(), // Convert bigint to string for Decimal storage
+        rawRate: rawRate.toString(),
       },
     });
 
@@ -177,4 +217,3 @@ export async function indexAllPools(): Promise<IndexResult[]> {
 
   return results;
 }
-
