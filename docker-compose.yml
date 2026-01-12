@@ -1,0 +1,101 @@
+version: "3.8"
+
+services:
+  # ============================================
+  # PostgreSQL Database (shared by squid + poller)
+  # ============================================
+  db:
+    image: postgres:15-alpine
+    container_name: yield-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: yield_indexer
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - yield_net
+
+  # ============================================
+  # Subsquid Indexer (Event-based)
+  # ============================================
+  squid-processor:
+    build:
+      context: ./squid
+      dockerfile: Dockerfile
+    container_name: yield-squid
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: yield_indexer
+      DB_USER: postgres
+      DB_PASS: postgres
+      RPC_ARBITRUM_HTTP: ${RPC_ARBITRUM_HTTP:-https://arb1.arbitrum.io/rpc}
+      CHAIN_ID: 42161
+      FROM_BLOCK: ${FROM_BLOCK:-70000000}
+    restart: unless-stopped
+    networks:
+      - yield_net
+
+  # ============================================
+  # Subsquid GraphQL API (optional)
+  # ============================================
+  squid-api:
+    build:
+      context: ./squid
+      dockerfile: Dockerfile
+    container_name: yield-squid-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: yield_indexer
+      DB_USER: postgres
+      DB_PASS: postgres
+      GQL_PORT: 4350
+    command: ["npx", "squid-graphql-server"]
+    ports:
+      - "4350:4350"
+    restart: unless-stopped
+    networks:
+      - yield_net
+
+  # ============================================
+  # Poller Service (Real-time APY)
+  # ============================================
+  poller:
+    build:
+      context: .
+      dockerfile: Dockerfile.poller
+    container_name: yield-poller
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/yield_indexer
+      ARBITRUM_RPC_URL: ${RPC_ARBITRUM_HTTP:-https://arb1.arbitrum.io/rpc}
+      INDEX_INTERVAL_HOURS: 1
+      DISCOVERY_INTERVAL_HOURS: 24
+    restart: unless-stopped
+    networks:
+      - yield_net
+
+volumes:
+  db_data:
+
+networks:
+  yield_net:
+    driver: bridge
+

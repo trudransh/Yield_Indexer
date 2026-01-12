@@ -1,0 +1,16 @@
+manifestVersion: subsquid.io/v0.1
+name: yield-squid
+version: 1
+description: Subsquid indexer for yield data on Arbitrum
+
+build:
+  - npm run build
+
+deploy:
+  addons:
+    postgres:
+  processor:
+    cmd: ["node", "lib/main.js"]
+  api:
+    cmd: ["npx", "squid-graphql-server"]
+

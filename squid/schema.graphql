@@ -1,0 +1,132 @@
+# Protocol information (Aave, Compound, Morpho, etc.)
+type Protocol @entity {
+  id: ID! # protocol name: 'aave_v3', 'compound_v3', etc.
+  displayName: String!
+  riskScore: Float! # 0.00 to 0.30 (from NAM equation)
+  poolAbiType: String! # 'aave_v3', 'compound_v3', 'erc4626'
+  createdAt: DateTime!
+  
+  pools: [Pool!]! @derivedFrom(field: "protocol")
+}
+
+# Individual lending pools or vaults
+type Pool @entity {
+  id: ID! # chainId:contractAddress (e.g., "42161:0xabc...")
+  chainId: Int! @index
+  protocol: Protocol! @index
+  
+  # Contract info
+  contractAddress: String! @index
+  name: String!
+  
+  # Underlying stablecoin
+  underlyingToken: String!
+  underlyingSymbol: String! @index
+  
+  # Pool type
+  poolType: String! # 'lending', 'vault'
+  
+  # Current state
+  currentApy: Float
+  currentTvl: BigInt
+  lastUpdatedAt: DateTime
+  
+  # For ERC-4626 vaults: track price per share
+  lastPricePerShare: BigInt
+  
+  # Discovery metadata
+  discoveredVia: String # 'subsquid', 'defillama', 'manual'
+  
+  isActive: Boolean!
+  createdAt: DateTime!
+  
+  # Relations
+  apySnapshots: [ApySnapshot!]! @derivedFrom(field: "pool")
+  rateUpdates: [RateUpdate!]! @derivedFrom(field: "pool")
+}
+
+# Historical APY snapshots (from events)
+type ApySnapshot @entity {
+  id: ID! # chainId:poolAddress:blockNumber
+  pool: Pool! @index
+  
+  timestamp: DateTime! @index
+  blockNumber: Int! @index
+  
+  # APY data
+  apy: Float!
+  tvl: BigInt
+  
+  # Raw on-chain values
+  rawRate: BigInt # liquidityRate for Aave, supplyRate for Compound
+  pricePerShare: BigInt # For ERC-4626 vaults
+}
+
+# Rate update events from lending protocols
+type RateUpdate @entity {
+  id: ID! # chainId:txHash:logIndex
+  pool: Pool! @index
+  
+  timestamp: DateTime! @index
+  blockNumber: Int! @index
+  txHash: String! @index
+  logIndex: Int!
+  
+  # Rate data
+  liquidityRate: BigInt # Aave: supply rate
+  variableBorrowRate: BigInt # Aave: borrow rate
+  stableBorrowRate: BigInt # Aave: stable borrow rate
+  
+  # Utilization
+  utilizationRate: Float
+  
+  # Calculated APY at this point
+  supplyApy: Float!
+}
+
+# Vault events (Deposit/Withdraw for ERC-4626)
+type VaultEvent @entity {
+  id: ID! # chainId:txHash:logIndex
+  pool: Pool! @index
+  
+  timestamp: DateTime! @index
+  blockNumber: Int! @index
+  txHash: String! @index
+  logIndex: Int!
+  
+  eventType: String! # 'deposit', 'withdraw'
+  
+  # Event data
+  sender: String! @index
+  owner: String! @index
+  assets: BigInt!
+  shares: BigInt!
+  
+  # Snapshot at event time
+  pricePerShare: BigInt
+  totalAssets: BigInt
+}
+
+# Computed metrics for stability score (σ)
+type PoolMetrics @entity {
+  id: ID! # Same as pool id
+  pool: Pool! @unique
+  
+  # APY averages
+  avgApy1h: Float
+  avgApy24h: Float
+  avgApy7d: Float
+  avgApy30d: Float
+  
+  # Stability score (σ) from NAM equation
+  stabilityScore: Float
+  
+  # Coefficient of Variation components
+  cv1h: Float
+  cv6h: Float
+  cv24h: Float
+  cvWeighted: Float
+  
+  updatedAt: DateTime!
+}
+

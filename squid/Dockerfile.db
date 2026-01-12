@@ -1,0 +1,12 @@
+# PostgreSQL with required extensions for Subsquid
+FROM postgres:15-alpine
+
+# Create initialization script
+COPY <<EOF /docker-entrypoint-initdb.d/init.sql
+-- Create extension for better indexing
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Grant permissions
+GRANT ALL PRIVILEGES ON DATABASE yield_squid TO postgres;
+EOF
+

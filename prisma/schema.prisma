@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Protocol information (Aave, Compound, Morpho, etc.)
+model Protocol {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique // 'aave_v3', 'compound_v3', 'morpho'
+  displayName String   @map("display_name")
+  riskScore   Decimal  @default(0.05) @map("risk_score") @db.Decimal(3, 2) // 0.00 to 0.30
+  poolAbiType String   @map("pool_abi_type") // 'aave_v3', 'compound_v3', 'erc4626'
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  pools Pool[]
+
+  @@map("protocols")
+}
+
+// Individual pools/vaults
+model Pool {
+  id              Int      @id @default(autoincrement())
+  protocolId      Int      @map("protocol_id")
+  protocol        Protocol @relation(fields: [protocolId], references: [id])
+
+  // Identifiers
+  contractAddress String @map("contract_address") @db.VarChar(66)
+  name            String @db.VarChar(255)
+
+  // Underlying stablecoin
+  underlyingToken  String @map("underlying_token") @db.VarChar(66)
+  underlyingSymbol String @map("underlying_symbol") @db.VarChar(20)
+
+  // Pool type
+  poolType String @map("pool_type") @db.VarChar(50) // 'lending', 'vault'
+
+  // Current state (updated by indexer)
+  currentApy     Decimal?  @map("current_apy") @db.Decimal(10, 4)
+  currentTvl     Decimal?  @map("current_tvl") @db.Decimal(20, 2)
+  lastIndexedAt  DateTime? @map("last_indexed_at")
+
+  // For ERC-4626 vaults: track price per share for APY calculation
+  lastPricePerShare Decimal? @map("last_price_per_share") @db.Decimal(38, 18)
+  lastPpsTimestamp  DateTime? @map("last_pps_timestamp")
+
+  // Discovery metadata
+  discoveredVia    String?  @map("discovered_via") @db.VarChar(50) // 'defillama', 'manual'
+  defillamaPoolId  String?  @map("defillama_pool_id") @db.VarChar(255)
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  snapshots ApySnapshot[]
+  metrics   PoolMetrics?
+
+  // Composite unique: same pool contract can have multiple underlying tokens (Aave/Radiant)
+  @@unique([contractAddress, underlyingToken])
+  @@index([contractAddress])
+  @@map("pools")
+}
+
+// Historical APY snapshots (populated by on-chain indexer)
+model ApySnapshot {
+  id        Int      @id @default(autoincrement())
+  poolId    Int      @map("pool_id")
+  pool      Pool     @relation(fields: [poolId], references: [id])
+  timestamp DateTime
+
+  // APY data
+  apy Decimal @db.Decimal(10, 4)
+  tvl Decimal? @db.Decimal(20, 2)
+
+  // Raw on-chain data for debugging
+  rawRate Decimal? @map("raw_rate") @db.Decimal(38, 0)
+
+  @@unique([poolId, timestamp])
+  @@index([poolId, timestamp(sort: Desc)])
+  @@map("apy_snapshots")
+}
+
+// Computed metrics for each pool
+model PoolMetrics {
+  poolId Int  @id @map("pool_id")
+  pool   Pool @relation(fields: [poolId], references: [id])
+
+  // APY averages
+  avgApy1h  Decimal? @map("avg_apy_1h") @db.Decimal(10, 4)
+  avgApy24h Decimal? @map("avg_apy_24h") @db.Decimal(10, 4)
+  avgApy7d  Decimal? @map("avg_apy_7d") @db.Decimal(10, 4)
+
+  // Stability score (σ) - from NAM equation
+  stabilityScore Decimal? @map("stability_score") @db.Decimal(5, 4)
+
+  // Coefficient of Variation components
+  cv1h      Decimal? @map("cv_1h") @db.Decimal(10, 4)
+  cv6h      Decimal? @map("cv_6h") @db.Decimal(10, 4)
+  cv24h     Decimal? @map("cv_24h") @db.Decimal(10, 4)
+  cvWeighted Decimal? @map("cv_weighted") @db.Decimal(10, 4)
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("pool_metrics")
+}
+
