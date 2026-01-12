@@ -1,6 +1,7 @@
 import { type Address, formatUnits } from "viem";
 import { getArbitrumClient } from "./rpc-client.js";
 import { erc4626Abi } from "./abis/erc4626.js";
+import { calculateApyFromPPS, APY_CONSTANTS } from "./apy-calculator.js";
 
 export interface VaultData {
   pricePerShare: bigint; // Raw value (for storing)
@@ -90,7 +91,8 @@ export async function getVaultData(vaultAddress: Address): Promise<VaultData> {
 /**
  * Calculate APY for an ERC-4626 vault based on price per share change
  *
- * APY = ((currentPPS / previousPPS) - 1) * (hoursPerYear / hoursPassed) * 100
+ * Uses Yearn's logarithmic formula for accurate continuous compounding:
+ * APY = e^(ln(price_ratio) × annualization_factor) - 1
  *
  * @param vaultAddress - The vault contract address
  * @param previousPPS - Previous price per share (raw bigint)
@@ -121,12 +123,12 @@ export async function calculateVaultApy(
     };
   }
 
-  // Calculate time elapsed in hours
+  // Calculate time elapsed in seconds
   const now = new Date();
-  const hoursPassed = (now.getTime() - previousTimestamp.getTime()) / (1000 * 60 * 60);
+  const elapsedSeconds = (now.getTime() - previousTimestamp.getTime()) / 1000;
 
   // Need at least 1 hour of data for meaningful APY
-  if (hoursPassed < 1) {
+  if (elapsedSeconds < APY_CONSTANTS.SECONDS_PER_HOUR) {
     return {
       apy: 0,
       tvl: currentData.totalAssets,
@@ -134,12 +136,11 @@ export async function calculateVaultApy(
     };
   }
 
-  // Calculate APY
-  // APY = ((currentPPS / previousPPS) - 1) * (8760 / hoursPassed) * 100
+  // Calculate APY using Yearn's logarithmic formula
   const currentPPS = Number(currentData.pricePerShare);
   const prevPPS = Number(previousPPS);
 
-  if (prevPPS === 0) {
+  if (prevPPS <= 0) {
     return {
       apy: 0,
       tvl: currentData.totalAssets,
@@ -147,22 +148,11 @@ export async function calculateVaultApy(
     };
   }
 
-  const ppsRatio = currentPPS / prevPPS;
-  const hourlyReturn = ppsRatio - 1;
-  const hoursPerYear = 8760; // 365 * 24
-
-  // Annualized return as percentage
-  // Using simple annualization: hourlyReturn * (hoursPerYear / hoursPassed)
-  const apyDecimal = hourlyReturn * (hoursPerYear / hoursPassed);
-  const apyPercent = apyDecimal * 100;
-
-  // Sanity check: APY should be reasonable (-100% to 1000%)
-  // Negative APY is possible for vaults losing value
-  // If outside this range, something is wrong with data
-  const clampedApy = Math.max(-100, Math.min(1000, apyPercent));
+  // Use the shared Yearn-style APY calculator
+  const apy = calculateApyFromPPS(currentPPS, prevPPS, elapsedSeconds);
 
   return {
-    apy: clampedApy,
+    apy,
     tvl: currentData.totalAssets,
     rawRate: currentData.pricePerShare,
   };

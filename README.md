@@ -190,13 +190,63 @@ CV_weighted = 0.50×CV₁ₕ + 0.30×CV₆ₕ + 0.20×CV₂₄ₕ
 CV = StdDev(APY) / Mean(APY)
 ```
 
+## APY Calculation (Yearn Logarithmic Method)
+
+We use Yearn Finance's logarithmic formula for accurate continuous compounding:
+
+```
+APY = e^(ln(price_ratio) × annualization_factor) - 1
+
+Where:
+- price_ratio = current_pps / previous_pps
+- annualization_factor = seconds_per_year / elapsed_seconds
+```
+
+### Why Logarithms?
+
+The naive approach `APY = (price_ratio)^(365/days) - 1` has issues:
+- **Explodes with short sample periods** (unrealistic APY values)
+- **Mathematical instability** with negative or near-zero growth
+
+The logarithmic formula handles continuous compounding correctly:
+
+```typescript
+// From src/indexer/apy-calculator.ts
+function calculateApyFromPPS(currentPPS, previousPPS, elapsedSeconds) {
+  const SECONDS_PER_YEAR = 31_536_000;
+  
+  // Log of the growth ratio
+  const priceRatio = currentPPS / previousPPS;
+  const logGrowth = Math.log(priceRatio);
+  
+  // Annualize it
+  const annualizedLogGrowth = logGrowth * (SECONDS_PER_YEAR / elapsedSeconds);
+  
+  // Convert back from log space
+  const apy = (Math.exp(annualizedLogGrowth) - 1) * 100;
+  
+  return apy;
+}
+```
+
+### Example
+
+If a vault's PPS grows from 1.0 to 1.01 over 24 hours:
+- **Naive formula**: `(1.01)^365 - 1 = 3678%` ❌ (compounds daily, not continuous)
+- **Logarithmic formula**: `e^(ln(1.01) × 365) - 1 = 3778%` ✅ (continuous compounding)
+
+For smaller growth rates (typical 5-20% APY), both formulas give similar results. The difference becomes significant with:
+- High yields (>50% APY)
+- Short sample periods (<24 hours)
+- High-frequency compounding protocols
+
 ## Adjusted APY (for NAM decisions)
 
 ```
 Adjusted APY = APY × σ × (1 − R)
 
 Where:
-- APY = Current APY
+- APY = Current APY (calculated using Yearn's logarithmic method)
 - σ = Stability score (0.5 to 1.0)
 - R = Protocol risk score (0.0 to 0.3)
 ```
@@ -236,8 +286,13 @@ yield_indexer/
 ├── src/                            # Poller service
 │   ├── index.ts                    # Entry point + scheduler
 │   ├── config.ts                   # Config
-│   ├── discovery/                  # DefiLlama discovery
+│   ├── discovery/                  # vaults.fyi discovery
 │   ├── indexer/                    # RPC polling
+│   │   ├── apy-calculator.ts       # Yearn-style APY calculation
+│   │   ├── erc4626.ts              # ERC-4626 vault handler
+│   │   ├── lending.ts              # Aave/Compound handlers
+│   │   ├── protocols.ts            # Protocol-specific handlers
+│   │   └── abis/                   # Contract ABIs
 │   └── metrics/                    # Stability score
 │
 ├── prisma/

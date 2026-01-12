@@ -19,6 +19,7 @@ import { venusVTokenAbi } from "./abis/venus.js";
 import { stargatePoolAbi } from "./abis/stargate.js";
 import { genericTokenAbi, hopLpTokenAbi, skyUsdsAbi } from "./abis/generic.js";
 import { aaveV3PoolAbi } from "./abis/aave-v3-pool.js";
+import { calculateApyFromPPS, APY_CONSTANTS } from "./apy-calculator.js";
 
 export interface ProtocolData {
   apy: number;
@@ -173,21 +174,18 @@ export async function getBeefyData(
     
     const tvl = Number(formatUnits(balance, decimals));
     
-    // Calculate APY from PPS change if we have previous data
+    // Calculate APY from PPS change using Yearn's logarithmic formula
     let apy = 0;
     if (previousPPS && previousTimestamp) {
       const now = new Date();
-      const hoursPassed = (now.getTime() - previousTimestamp.getTime()) / (1000 * 60 * 60);
+      const elapsedSeconds = (now.getTime() - previousTimestamp.getTime()) / 1000;
       
-      if (hoursPassed >= 1) {
+      if (elapsedSeconds >= APY_CONSTANTS.SECONDS_PER_HOUR) {
         const currentPPS = Number(pricePerFullShare);
         const prevPPS = Number(previousPPS);
         
         if (prevPPS > 0) {
-          const ppsRatio = currentPPS / prevPPS;
-          const hourlyReturn = ppsRatio - 1;
-          const hoursPerYear = 8760;
-          apy = Math.max(-100, Math.min(1000, hourlyReturn * (hoursPerYear / hoursPassed) * 100));
+          apy = calculateApyFromPPS(currentPPS, prevPPS, elapsedSeconds);
         }
       }
     }
